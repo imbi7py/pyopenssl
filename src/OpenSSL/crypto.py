@@ -30,6 +30,19 @@ TYPE_RSA = _lib.EVP_PKEY_RSA
 TYPE_DSA = _lib.EVP_PKEY_DSA
 
 
+PKCS7_BINARY = _lib.PKCS7_BINARY
+PKCS7_DETACHED = _lib.PKCS7_DETACHED
+PKCS7_NOATTR = _lib.PKCS7_NOATTR
+PKCS7_NOCERTS = _lib.PKCS7_NOCERTS
+PKCS7_NOCHAIN = _lib.PKCS7_NOCHAIN
+PKCS7_NOINTERN = _lib.PKCS7_NOINTERN
+PKCS7_NOSIGS = _lib.PKCS7_NOSIGS
+PKCS7_NOSMIMECAP = _lib.PKCS7_NOSMIMECAP
+PKCS7_NOVERIFY = _lib.PKCS7_NOVERIFY
+PKCS7_STREAM = _lib.PKCS7_STREAM
+PKCS7_TEXT = _lib.PKCS7_TEXT
+
+
 class Error(Exception):
     """
     An error occurred in an `OpenSSL.crypto` API.
@@ -2075,6 +2088,56 @@ class PKCS7(object):
         string_type = _lib.OBJ_nid2sn(nid)
         return _ffi.string(string_type)
 
+    def verify(self, certs=None, store=None, data=None, flags=0):
+        """
+        Verify the PKCS7 structure's signature and return its payload.
+
+        :param certs: An iterable of certificates that should contain the signer's
+            certificate.
+        :type certs: Iterable of :py:class:`X509` objects
+
+        :param store: A store containing trusted certificates.
+        :type store: :py:class:`X509Store`
+
+        :param flags: Integer flags to modify the verification mechanism's
+            behavior. See the docs for `PKCS7_verify
+            <https://www.openssl.org/docs/manmaster/crypto/PKCS7_verify.html>`_
+        :type flags: :py:class:`int`
+
+        :return: The signed data.
+        :rtype: :py:class:`bytes`
+
+        :raises Error: If the signature is invalid, or there was a problem
+            verifying the signature.
+        """
+        if store is None:
+            store = X509Store()
+        elif not isinstance(store, X509Store):
+            raise TypeError("store must be an X509Store instance")
+
+        if certs is not None:
+            x509_ptr = _ffi.gc(_lib.sk_X509_new_null(), _lib.sk_X509_free)
+            for cert in certs:
+                if not _lib.sk_X509_push(x509_ptr, cert._x509):
+                    _raise_current_error()
+        else:
+            x509_ptr = _ffi.NULL
+
+        if data is not None:
+            data = _text_to_bytes_and_warn(data)
+            indata = _new_mem_buf(data)
+        else:
+            indata = _ffi.NULL
+
+        out = _new_mem_buf()
+        success = _lib.PKCS7_verify(self._pkcs7, x509_ptr, store._store,
+                                    indata, out, flags)
+        if not success:
+            _raise_current_error()
+
+        return _bio_to_string(out)
+
+
 PKCS7Type = PKCS7
 
 
@@ -2579,6 +2642,38 @@ def sign(pkey, data, digest):
     return _ffi.buffer(signature_buffer, signature_length[0])[:]
 
 
+def pkcs7_sign(cert, pkey, data, certs=(), flags=0):
+    """
+    Given a certificate and its private key, produce a PKCS7 object
+    containing the given data and its signature.
+
+    :param cert: Certificate of signing PKey.
+    :param pkey: Pkey to sign with.
+    :param certs: Certificates to include in the PKCS7 structure.
+    :param data: data to be signed.
+    :return: a :py:class:`PCKS7` object.
+    """
+
+    data = _text_to_bytes_and_warn("data", data)
+    bio_data = _new_mem_buf(data)
+
+    x509_ptr = _ffi.gc(_lib.sk_X509_new_null(), _lib.sk_X509_free)
+
+    for cert in certs:
+        if not _lib.sk_X509_push(x509_ptr, cert._x509):
+            _raise_current_error()
+
+    pkcs7 = _lib.PKCS7_sign(cert._x509, pkey._pkey, x509_ptr, bio_data, flags)
+
+    if pkcs7 == _ffi.NULL:
+        _raise_current_error()
+
+    pypkcs7 = PKCS7.__new__(PKCS7)
+    pypkcs7._pkcs7 = _ffi.gc(pkcs7, _lib.PKCS7_free)
+    return pypkcs7
+
+
+
 def verify(cert, signature, data, digest):
     """
     Verify a signature.
@@ -2642,7 +2737,6 @@ def dump_crl(type, crl):
     assert ret == 1
     return _bio_to_string(bio)
 
-
 def load_crl(type, buffer):
     """
     Load a certificate revocation list from a buffer
@@ -2700,6 +2794,33 @@ def load_pkcs7_data(type, buffer):
     pypkcs7 = PKCS7.__new__(PKCS7)
     pypkcs7._pkcs7 = _ffi.gc(pkcs7, _lib.PKCS7_free)
     return pypkcs7
+
+
+def dump_pkcs7_data(type, pkcs7):
+    """
+    Dump PKCS7 data to a buffer.
+
+    :param type: The file type (one of FILETYPE_PEM or FILETYPE_ASN1)
+    :param buffer: The PKCS7 object.
+
+    :return: The buffer with the PKCS7 data in the specified format.
+    :rtype: :data:`bytes`
+    """
+
+    # no streaming
+    bio = _new_mem_buf()
+
+    if type == FILETYPE_PEM:
+        res = _lib.PEM_write_bio_PKCS7(bio, pkcs7._pkcs7)
+    elif type == FILETYPE_ASN1:
+        res = _lib.i2d_PKCS7_bio(bio, pkcs7._pkcs7)
+    else:
+        raise ValueError("type argument must be FILETYPE_PEM or FILETYPE_ASN1")
+
+    if not res:
+        _raise_current_error()
+
+    return _bio_to_string(bio)
 
 
 def load_pkcs12(buffer, passphrase=None):

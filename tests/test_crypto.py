@@ -30,8 +30,8 @@ from OpenSSL.crypto import load_publickey, dump_publickey
 from OpenSSL.crypto import FILETYPE_PEM, FILETYPE_ASN1, FILETYPE_TEXT
 from OpenSSL.crypto import dump_certificate, load_certificate_request
 from OpenSSL.crypto import dump_certificate_request, dump_privatekey
-from OpenSSL.crypto import PKCS7Type, load_pkcs7_data
-from OpenSSL.crypto import PKCS12, PKCS12Type, load_pkcs12
+from OpenSSL.crypto import PKCS7Type, load_pkcs7_data, dump_pkcs7_data
+from OpenSSL.crypto import PKCS12, PKCS12Type, load_pkcs12, pkcs7_sign
 from OpenSSL.crypto import CRL, Revoked, dump_crl, load_crl
 from OpenSSL.crypto import NetscapeSPKI, NetscapeSPKIType
 from OpenSSL.crypto import (
@@ -3617,6 +3617,48 @@ class SignVerifyTests(TestCase):
 
         priv_key = load_privatekey(FILETYPE_PEM, large_key_pem)
         sign(priv_key, content, "sha1")
+
+
+class TestPKCS7SignAndVerify(object):
+    CONTENT = b(
+            "It was a bright cold day in April, and the clocks were striking "
+            "thirteen. Winston Smith, his chin nuzzled into his breast in an "
+            "effort to escape the vile wind, slipped quickly through the "
+            "glass doors of Victory Mansions, though not quickly enough to "
+            "prevent a swirl of gritty dust from entering along with him.")
+
+    def test_pkcs7_sign_verify(self):
+        """
+        :py:obj:`pkcs7_sign` generates a cryptographic signature which
+        :py:class:`PKCS7`'s verify can check.
+        """
+        # sign the content with this private key
+        root_key = load_privatekey(FILETYPE_PEM, root_key_pem)
+        # verify the content with this cert
+        root_cert = load_certificate(FILETYPE_PEM, root_cert_pem)
+
+        signed = pkcs7_sign(root_cert, root_key, self.CONTENT)
+        assert isinstance(signed, PKCS7Type)
+
+        assert signed.type_is_signed()
+        assert signed.get_type_name() == 'pkcs7-signedData'
+
+        assert not signed.type_is_enveloped()
+        assert not signed.type_is_signedAndEnveloped()
+        assert not signed.type_is_data()
+
+        store = X509Store()
+        store.add_cert(root_cert)
+
+        assert signed.verify(store=store) == self.CONTENT
+
+    def test_pcks7_load_dump_data(self):
+        """:
+        :py:obj:`dump_pkcs7_data` produces bytes loadable by
+        :py:obj:`load_pkcs7_data`.
+        """
+        pypkcs7 = load_pkcs7_data(FILETYPE_PEM, pkcs7Data)
+        assert dump_pkcs7_data(FILETYPE_PEM, pypkcs7) == pkcs7Data
 
 
 class EllipticCurveTests(TestCase):
